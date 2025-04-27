@@ -63,3 +63,7 @@ venv/
 .vscode/
 *.swp
 *.swo
+
+# Audio cache
+/audio_cache/
+/backend/audio_cache/
