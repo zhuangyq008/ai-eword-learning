@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 
 interface Example {
   en: string
@@ -15,32 +16,75 @@ interface Word {
   examples: Example[]
 }
 
+interface LearningRecord {
+  wordId: string
+  userId: string
+  word: string
+  phonetic: string
+  meaning: string
+  examples: Example[]
+  reviewCount: number
+  lastReviewedAt: string | null
+  createdAt: string
+  isInReviewList: boolean
+}
+
 export default function HistoryPage() {
-  const [words, setWords] = useState<Word[]>([])
+  const [records, setRecords] = useState<LearningRecord[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
   const router = useRouter()
+  
+  // Default user ID (in a real app, this would come from authentication)
+  const userId = "default-user"
 
   useEffect(() => {
-    // Load the processed words from localStorage
-    const storedWords = localStorage.getItem('processedWords')
+    // Load the learning records from the API
+    const fetchLearningRecords = async () => {
+      try {
+        const response = await axios.get(`/api/learning-record/get?userId=${userId}`);
+        
+        if (response.data.records && response.data.records.length > 0) {
+          // Sort records by creation date (newest first)
+          const sortedRecords = [...response.data.records].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          );
+          setRecords(sortedRecords);
+        } else {
+          // If no records, try to get from localStorage as fallback
+          const storedWords = localStorage.getItem('processedWords');
+          if (storedWords) {
+            const parsedWords = JSON.parse(storedWords);
+            
+            // Convert to learning records format
+            const fallbackRecords = parsedWords.map((word: Word) => ({
+              wordId: Math.random().toString(36).substring(2, 15),
+              userId,
+              word: word.word,
+              phonetic: word.phonetic,
+              meaning: word.meaning,
+              examples: word.examples,
+              reviewCount: 0,
+              lastReviewedAt: null,
+              createdAt: new Date().toISOString(),
+              isInReviewList: false
+            }));
+            
+            setRecords(fallbackRecords);
+          } else {
+            setError('没有找到学习历史，请先输入单词');
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching learning records:', err);
+        setError('加载学习历史时出错');
+      } finally {
+        setIsLoading(false);
+      }
+    };
     
-    if (!storedWords) {
-      setError('没有找到学习历史，请先输入单词')
-      setIsLoading(false)
-      return
-    }
-    
-    try {
-      const parsedWords = JSON.parse(storedWords)
-      setWords(parsedWords)
-      setIsLoading(false)
-    } catch (err) {
-      console.error('Error parsing stored words:', err)
-      setError('加载学习历史时出错')
-      setIsLoading(false)
-    }
-  }, [])
+    fetchLearningRecords();
+  }, [userId]);
 
   const playAudio = async (text: string) => {
     try {
@@ -102,7 +146,7 @@ export default function HistoryPage() {
     )
   }
 
-  if (words.length === 0) {
+  if (records.length === 0) {
     return (
       <div className="container mx-auto px-4 py-12">
         <div className="max-w-2xl mx-auto card">
@@ -143,35 +187,59 @@ export default function HistoryPage() {
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {words.map((word, index) => (
-                  <tr key={index} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                {records.map((record, index) => (
+                  <tr key={record.wordId} className={index % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-primary cursor-pointer hover:underline" onClick={() => playAudio(word.word)}>
-                        {word.word}
+                      <div className="text-sm font-medium text-primary cursor-pointer hover:underline" onClick={() => playAudio(record.word)}>
+                        {record.word}
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-500">{word.phonetic}</div>
+                      <div className="text-sm text-gray-500">{record.phonetic}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{word.meaning}</div>
+                      <div className="text-sm text-gray-900">{record.meaning}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <button 
                         className="text-primary hover:text-primary/80 mr-3"
                         onClick={() => {
-                          // Store the current word in localStorage and navigate to learn page
-                          localStorage.setItem('currentWordIndex', index.toString())
-                          router.push('/learn')
+                          // Navigate to learn page with this word
+                          router.push(`/learn?wordId=${record.wordId}`)
                         }}
                       >
                         学习
                       </button>
                       <button 
-                        className="text-accent hover:text-accent/80"
-                        onClick={() => playAudio(word.word)}
+                        className="text-accent hover:text-accent/80 mr-3"
+                        onClick={() => playAudio(record.word)}
                       >
                         播放
+                      </button>
+                      <button 
+                        className={`${record.isInReviewList ? 'text-gray-500' : 'text-green-600 hover:text-green-800'}`}
+                        onClick={async () => {
+                          if (!record.isInReviewList) {
+                            try {
+                              await axios.post('/api/learning-record/review', {
+                                wordId: record.wordId,
+                                userId,
+                                addToReviewList: true
+                              });
+                              
+                              // Update local state
+                              const updatedRecords = records.map(r => 
+                                r.wordId === record.wordId ? {...r, isInReviewList: true} : r
+                              );
+                              setRecords(updatedRecords);
+                            } catch (err) {
+                              console.error('Error adding to review list:', err);
+                            }
+                          }
+                        }}
+                        disabled={record.isInReviewList}
+                      >
+                        {record.isInReviewList ? '已添加到复习列表' : '添加到复习列表'}
                       </button>
                     </td>
                   </tr>

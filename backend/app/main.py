@@ -64,6 +64,23 @@ class WordListResponse(BaseModel):
     createdAt: str
     updatedAt: str
 
+class LearningRecord(BaseModel):
+    userId: str
+    wordId: str
+    word: str
+    phonetic: str
+    meaning: str
+    examples: List[Example]
+    reviewCount: int = 0
+    lastReviewedAt: Optional[str] = None
+    createdAt: str
+    isInReviewList: bool = False
+
+class LearningRecordInput(BaseModel):
+    userId: str = "default-user"
+    word: Word
+    addToReviewList: bool = False
+
 # Mock data for development
 MOCK_DATA = {
     "apple": {
@@ -486,6 +503,95 @@ def create_wordlist_table_if_not_exists():
         logging.error(f"Error creating WordLists table: {str(e)}")
         raise
 
+def create_learning_records_table_if_not_exists():
+    """
+    Create the LearningRecords table if it doesn't exist
+    """
+    try:
+        dynamodb = get_dynamodb_client()
+        
+        # Check if table exists
+        existing_tables = dynamodb.meta.client.list_tables()['TableNames']
+        if 'LearningRecords' not in existing_tables:
+            table = dynamodb.create_table(
+                TableName='LearningRecords',
+                KeySchema=[
+                    {
+                        'AttributeName': 'wordId',
+                        'KeyType': 'HASH'  # Partition key
+                    },
+                    {
+                        'AttributeName': 'userId',
+                        'KeyType': 'RANGE'  # Sort key
+                    }
+                ],
+                AttributeDefinitions=[
+                    {
+                        'AttributeName': 'wordId',
+                        'AttributeType': 'S'
+                    },
+                    {
+                        'AttributeName': 'userId',
+                        'AttributeType': 'S'
+                    },
+                    {
+                        'AttributeName': 'isInReviewList',
+                        'AttributeType': 'N'
+                    }
+                ],
+                GlobalSecondaryIndexes=[
+                    {
+                        'IndexName': 'UserIdIndex',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'userId',
+                                'KeyType': 'HASH'
+                            }
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    },
+                    {
+                        'IndexName': 'ReviewListIndex',
+                        'KeySchema': [
+                            {
+                                'AttributeName': 'userId',
+                                'KeyType': 'HASH'
+                            },
+                            {
+                                'AttributeName': 'isInReviewList',
+                                'KeyType': 'RANGE'
+                            }
+                        ],
+                        'Projection': {
+                            'ProjectionType': 'ALL'
+                        },
+                        'ProvisionedThroughput': {
+                            'ReadCapacityUnits': 5,
+                            'WriteCapacityUnits': 5
+                        }
+                    }
+                ],
+                ProvisionedThroughput={
+                    'ReadCapacityUnits': 5,
+                    'WriteCapacityUnits': 5
+                }
+            )
+            
+            # Wait for the table to be created
+            table.meta.client.get_waiter('table_exists').wait(TableName='LearningRecords')
+            logging.info("LearningRecords table created successfully")
+        else:
+            logging.info("LearningRecords table already exists")
+    except Exception as e:
+        logging.error(f"Error creating LearningRecords table: {str(e)}")
+        raise
+
 # DynamoDB endpoints
 @app.post("/save-wordlist", response_model=WordListResponse)
 async def save_wordlist(wordlist_input: WordListInput):
@@ -636,6 +742,228 @@ async def get_wordlist(list_id: str):
     except Exception as e:
         logging.error(f"Error getting word list: {str(e)}")
         raise HTTPException(status_code=500, detail=f"获取单词列表时出错: {str(e)}")
+
+@app.post("/save-learning-record")
+async def save_learning_record(record_input: LearningRecordInput):
+    """
+    Save a learning record to DynamoDB
+    """
+    try:
+        # Create the table if it doesn't exist
+        create_learning_records_table_if_not_exists()
+        
+        # Get the DynamoDB client
+        dynamodb = get_dynamodb_client()
+        table = dynamodb.Table('LearningRecords')
+        
+        # Generate a unique ID for the word
+        word_id = str(uuid.uuid4())
+        current_time = datetime.now().isoformat()
+        
+        # Create the item to save
+        item = {
+            'wordId': word_id,
+            'userId': record_input.userId,
+            'word': record_input.word.word,
+            'phonetic': record_input.word.phonetic,
+            'meaning': record_input.word.meaning,
+            'examples': [example.dict() for example in record_input.word.examples],
+            'reviewCount': 0,
+            'lastReviewedAt': None,
+            'createdAt': current_time,
+            'isInReviewList': 1 if record_input.addToReviewList else 0  # Use 1/0 for boolean in DynamoDB
+        }
+        
+        # Save the item to DynamoDB
+        table.put_item(Item=item)
+        
+        # Return the saved item
+        return {
+            'wordId': word_id,
+            'userId': record_input.userId,
+            'word': record_input.word.dict(),
+            'reviewCount': 0,
+            'lastReviewedAt': None,
+            'createdAt': current_time,
+            'isInReviewList': record_input.addToReviewList,
+            'status': 'success'
+        }
+    except Exception as e:
+        logging.error(f"Error saving learning record: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"保存学习记录时出错: {str(e)}")
+
+@app.get("/get-learning-records")
+async def get_learning_records(userId: str = Query(..., description="User ID")):
+    """
+    Get all learning records for a user from DynamoDB
+    """
+    try:
+        # Create the table if it doesn't exist
+        create_learning_records_table_if_not_exists()
+        
+        # Get the DynamoDB client
+        dynamodb = get_dynamodb_client()
+        table = dynamodb.Table('LearningRecords')
+        
+        # Query the table for the user's learning records
+        response = table.query(
+            IndexName='UserIdIndex',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(userId)
+        )
+        
+        # Convert the DynamoDB items to LearningRecord objects
+        records = []
+        for item in response.get('Items', []):
+            # Convert the examples from DynamoDB format
+            examples = []
+            for example_data in item.get('examples', []):
+                examples.append(Example(
+                    en=example_data.get('en', ''),
+                    zh=example_data.get('zh', '')
+                ))
+            
+            records.append({
+                'wordId': item.get('wordId', ''),
+                'userId': item.get('userId', ''),
+                'word': item.get('word', ''),
+                'phonetic': item.get('phonetic', ''),
+                'meaning': item.get('meaning', ''),
+                'examples': examples,
+                'reviewCount': item.get('reviewCount', 0),
+                'lastReviewedAt': item.get('lastReviewedAt'),
+                'createdAt': item.get('createdAt', ''),
+                'isInReviewList': bool(item.get('isInReviewList', 0))
+            })
+        
+        return {'records': records}
+    except Exception as e:
+        logging.error(f"Error getting learning records: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取学习记录时出错: {str(e)}")
+
+@app.get("/get-review-list")
+async def get_review_list(userId: str = Query(..., description="User ID")):
+    """
+    Get all words in the review list for a user from DynamoDB
+    """
+    try:
+        # Create the table if it doesn't exist
+        create_learning_records_table_if_not_exists()
+        
+        # Get the DynamoDB client
+        dynamodb = get_dynamodb_client()
+        table = dynamodb.Table('LearningRecords')
+        
+        # Query the table for the user's review list
+        response = table.query(
+            IndexName='ReviewListIndex',
+            KeyConditionExpression=boto3.dynamodb.conditions.Key('userId').eq(userId) & 
+                                  boto3.dynamodb.conditions.Key('isInReviewList').eq(1)
+        )
+        
+        # Convert the DynamoDB items to LearningRecord objects
+        records = []
+        for item in response.get('Items', []):
+            # Convert the examples from DynamoDB format
+            examples = []
+            for example_data in item.get('examples', []):
+                examples.append(Example(
+                    en=example_data.get('en', ''),
+                    zh=example_data.get('zh', '')
+                ))
+            
+            records.append({
+                'wordId': item.get('wordId', ''),
+                'userId': item.get('userId', ''),
+                'word': item.get('word', ''),
+                'phonetic': item.get('phonetic', ''),
+                'meaning': item.get('meaning', ''),
+                'examples': examples,
+                'reviewCount': item.get('reviewCount', 0),
+                'lastReviewedAt': item.get('lastReviewedAt'),
+                'createdAt': item.get('createdAt', ''),
+                'isInReviewList': bool(item.get('isInReviewList', 0))
+            })
+        
+        return {'records': records}
+    except Exception as e:
+        logging.error(f"Error getting review list: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"获取复习列表时出错: {str(e)}")
+
+@app.post("/update-review-status")
+async def update_review_status(wordId: str, userId: str, addToReviewList: bool):
+    """
+    Update the review status of a word
+    """
+    try:
+        # Create the table if it doesn't exist
+        create_learning_records_table_if_not_exists()
+        
+        # Get the DynamoDB client
+        dynamodb = get_dynamodb_client()
+        table = dynamodb.Table('LearningRecords')
+        
+        # Update the item in DynamoDB
+        response = table.update_item(
+            Key={
+                'wordId': wordId,
+                'userId': userId
+            },
+            UpdateExpression="set isInReviewList = :r, updatedAt = :u",
+            ExpressionAttributeValues={
+                ':r': 1 if addToReviewList else 0,
+                ':u': datetime.now().isoformat()
+            },
+            ReturnValues="UPDATED_NEW"
+        )
+        
+        return {
+            'wordId': wordId,
+            'userId': userId,
+            'isInReviewList': addToReviewList,
+            'status': 'success'
+        }
+    except Exception as e:
+        logging.error(f"Error updating review status: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"更新复习状态时出错: {str(e)}")
+
+@app.post("/increment-review-count")
+async def increment_review_count(wordId: str, userId: str):
+    """
+    Increment the review count of a word
+    """
+    try:
+        # Create the table if it doesn't exist
+        create_learning_records_table_if_not_exists()
+        
+        # Get the DynamoDB client
+        dynamodb = get_dynamodb_client()
+        table = dynamodb.Table('LearningRecords')
+        
+        # Update the item in DynamoDB
+        current_time = datetime.now().isoformat()
+        response = table.update_item(
+            Key={
+                'wordId': wordId,
+                'userId': userId
+            },
+            UpdateExpression="set reviewCount = reviewCount + :val, lastReviewedAt = :t",
+            ExpressionAttributeValues={
+                ':val': 1,
+                ':t': current_time
+            },
+            ReturnValues="UPDATED_NEW"
+        )
+        
+        return {
+            'wordId': wordId,
+            'userId': userId,
+            'reviewCount': response['Attributes'].get('reviewCount', 1),
+            'lastReviewedAt': current_time,
+            'status': 'success'
+        }
+    except Exception as e:
+        logging.error(f"Error incrementing review count: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"增加复习次数时出错: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

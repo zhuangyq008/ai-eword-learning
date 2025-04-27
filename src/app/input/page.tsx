@@ -9,6 +9,9 @@ export default function InputPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState('')
   const router = useRouter()
+  
+  // Default user ID (in a real app, this would come from authentication)
+  const userId = "default-user"
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -39,6 +42,20 @@ export default function InputPage() {
       // Store the processed words in localStorage for now
       // In a real app, we might use a more robust state management solution
       localStorage.setItem('processedWords', JSON.stringify(response.data.words))
+      
+      // Save each word to the learning records
+      for (const word of response.data.words) {
+        try {
+          await axios.post('/api/learning-record/save', {
+            userId,
+            word,
+            addToReviewList: false
+          });
+        } catch (saveErr) {
+          console.error('Error saving word to learning records:', saveErr);
+          // Continue with the next word even if one fails
+        }
+      }
       
       // Redirect to the learn page
       router.push('/learn')

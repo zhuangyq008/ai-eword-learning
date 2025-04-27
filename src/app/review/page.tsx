@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 
 interface Example {
   en: string
@@ -15,39 +16,79 @@ interface Word {
   examples: Example[]
 }
 
+interface LearningRecord {
+  wordId: string
+  userId: string
+  word: string
+  phonetic: string
+  meaning: string
+  examples: Example[]
+  reviewCount: number
+  lastReviewedAt: string | null
+  createdAt: string
+  isInReviewList: boolean
+}
+
 export default function ReviewPage() {
-  const [words, setWords] = useState<Word[]>([])
+  const [records, setRecords] = useState<LearningRecord[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [showMeaning, setShowMeaning] = useState(false)
   const [showExamples, setShowExamples] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [incrementing, setIncrementing] = useState(false)
   const router = useRouter()
+  
+  // Default user ID (in a real app, this would come from authentication)
+  const userId = "default-user"
 
   useEffect(() => {
-    // Load the processed words from localStorage
-    const storedWords = localStorage.getItem('processedWords')
+    // Load the review list from the API
+    const fetchReviewList = async () => {
+      try {
+        const response = await axios.get(`/api/learning-record/review?userId=${userId}`);
+        
+        if (response.data.records && response.data.records.length > 0) {
+          // Shuffle the records for review
+          const shuffledRecords = [...response.data.records].sort(() => Math.random() - 0.5);
+          setRecords(shuffledRecords);
+        } else {
+          // If no records in review list, try to get from localStorage as fallback
+          const storedWords = localStorage.getItem('processedWords');
+          if (storedWords) {
+            const parsedWords = JSON.parse(storedWords);
+            // Shuffle the words for review
+            const shuffledWords = [...parsedWords].sort(() => Math.random() - 0.5);
+            
+            // Convert to learning records format
+            const fallbackRecords = shuffledWords.map((word: Word) => ({
+              wordId: Math.random().toString(36).substring(2, 15),
+              userId,
+              word: word.word,
+              phonetic: word.phonetic,
+              meaning: word.meaning,
+              examples: word.examples,
+              reviewCount: 0,
+              lastReviewedAt: null,
+              createdAt: new Date().toISOString(),
+              isInReviewList: true
+            }));
+            
+            setRecords(fallbackRecords);
+          } else {
+            setError('没有找到需要复习的单词');
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching review list:', err);
+        setError('加载复习列表时出错');
+      } finally {
+        setIsLoading(false);
+      }
+    };
     
-    if (!storedWords) {
-      setError('没有找到单词数据，请先输入单词')
-      setIsLoading(false)
-      return
-    }
-    
-    try {
-      const parsedWords = JSON.parse(storedWords)
-      // Shuffle the words for review
-      const shuffledWords = [...parsedWords].sort(() => Math.random() - 0.5)
-      setWords(shuffledWords)
-      setIsLoading(false)
-    } catch (err) {
-      console.error('Error parsing stored words:', err)
-      setError('加载单词数据时出错')
-      setIsLoading(false)
-    }
-  }, [])
-
-  const currentWord = words[currentIndex]
+    fetchReviewList();
+  }, [userId]);
 
   const playAudio = async (text: string) => {
     try {
@@ -85,19 +126,48 @@ export default function ReviewPage() {
     }
   }
 
+  const incrementReviewCount = async () => {
+    if (!currentRecord || incrementing) return;
+    
+    setIncrementing(true);
+    try {
+      await axios.post('/api/learning-record/increment', {
+        wordId: currentRecord.wordId,
+        userId
+      });
+      
+      // Update the local record
+      const updatedRecords = [...records];
+      updatedRecords[currentIndex] = {
+        ...updatedRecords[currentIndex],
+        reviewCount: (updatedRecords[currentIndex].reviewCount || 0) + 1,
+        lastReviewedAt: new Date().toISOString()
+      };
+      setRecords(updatedRecords);
+    } catch (err) {
+      console.error('Error incrementing review count:', err);
+    } finally {
+      setIncrementing(false);
+    }
+  };
+
   const handleNext = () => {
-    if (currentIndex < words.length - 1) {
-      setCurrentIndex(currentIndex + 1)
-      setShowMeaning(false)
-      setShowExamples(false)
+    if (currentIndex < records.length - 1) {
+      // Increment review count for the current word
+      incrementReviewCount();
+      
+      // Move to the next word
+      setCurrentIndex(currentIndex + 1);
+      setShowMeaning(false);
+      setShowExamples(false);
     }
   }
 
   const handlePrevious = () => {
     if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1)
-      setShowMeaning(false)
-      setShowExamples(false)
+      setCurrentIndex(currentIndex - 1);
+      setShowMeaning(false);
+      setShowExamples(false);
     }
   }
 
@@ -125,7 +195,7 @@ export default function ReviewPage() {
     )
   }
 
-  if (!currentWord) {
+  if (records.length === 0) {
     return (
       <div className="container mx-auto px-4 py-12">
         <div className="max-w-2xl mx-auto card">
@@ -141,13 +211,15 @@ export default function ReviewPage() {
     )
   }
 
+  const currentRecord = records[currentIndex];
+
   return (
     <div className="container mx-auto px-4 py-12">
       <div className="max-w-3xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <h1 className="text-3xl font-bold text-accent">复习单词</h1>
           <div className="text-gray-600">
-            {currentIndex + 1} / {words.length}
+            {currentIndex + 1} / {records.length}
           </div>
         </div>
         
@@ -156,11 +228,11 @@ export default function ReviewPage() {
             <div>
               <h2 
                 className="text-3xl font-bold mb-2 cursor-pointer hover:text-accent"
-                onClick={() => playAudio(currentWord.word)}
+                onClick={() => playAudio(currentRecord.word)}
               >
-                {currentWord.word}
+                {currentRecord.word}
               </h2>
-              <p className="text-gray-600 mb-1">{currentWord.phonetic}</p>
+              <p className="text-gray-600 mb-1">{currentRecord.phonetic}</p>
               
               {!showMeaning ? (
                 <button
@@ -171,13 +243,22 @@ export default function ReviewPage() {
                 </button>
               ) : (
                 <div className="mt-2">
-                  <p className="text-lg font-medium">{currentWord.meaning}</p>
+                  <p className="text-lg font-medium">{currentRecord.meaning}</p>
+                </div>
+              )}
+              
+              {currentRecord.reviewCount > 0 && (
+                <div className="mt-2 text-sm text-gray-500">
+                  已复习 {currentRecord.reviewCount} 次
+                  {currentRecord.lastReviewedAt && (
+                    <span> · 上次复习: {new Date(currentRecord.lastReviewedAt).toLocaleDateString()}</span>
+                  )}
                 </div>
               )}
             </div>
             <button
               className="p-2 rounded-full bg-accent text-white"
-              onClick={() => playAudio(currentWord.word)}
+              onClick={() => playAudio(currentRecord.word)}
               aria-label="播放发音"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -198,7 +279,7 @@ export default function ReviewPage() {
           ) : (
             <div className="space-y-4">
               <h3 className="text-xl font-semibold">例句：</h3>
-              {currentWord.examples.map((example, index) => (
+              {currentRecord.examples.map((example, index) => (
                 <div key={index} className="border-l-4 border-accent pl-4 py-2">
                   <p 
                     className="mb-1 cursor-pointer hover:text-accent"
@@ -223,9 +304,9 @@ export default function ReviewPage() {
           <button
             className="btn btn-primary"
             onClick={handleNext}
-            disabled={currentIndex === words.length - 1}
+            disabled={currentIndex === records.length - 1 || incrementing}
           >
-            下一个
+            {incrementing ? '保存中...' : '下一个'}
           </button>
         </div>
       </div>

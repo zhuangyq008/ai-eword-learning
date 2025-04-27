@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import axios from 'axios'
 
 interface Example {
   en: string
@@ -15,35 +16,159 @@ interface Word {
   examples: Example[]
 }
 
+interface LearningRecord {
+  wordId: string
+  userId: string
+  word: string
+  phonetic: string
+  meaning: string
+  examples: Example[]
+  reviewCount: number
+  lastReviewedAt: string | null
+  createdAt: string
+  isInReviewList: boolean
+}
+
+// Function to extract words from an example sentence
+function extractWordsFromExample(example: string): string[] {
+  // Remove the bold markers
+  const cleanExample = example.replace(/\*\*/g, '')
+  
+  // Split by spaces and punctuation, and filter out empty strings
+  return cleanExample
+    .split(/[\s,.!?;:"'()[\]{}]/g)
+    .map(word => word.trim().toLowerCase())
+    .filter(word => word.length > 0)
+    // Filter out common words (stop words)
+    .filter(word => !['a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'by', 'about', 'as', 'of', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those'].includes(word))
+}
+
 export default function LearnPage() {
   const [words, setWords] = useState<Word[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [exampleWords, setExampleWords] = useState<string[]>([])
+  const [selectedWord, setSelectedWord] = useState<string>('')
+  const [savingWord, setSavingWord] = useState(false)
+  const [saveSuccess, setSaveSuccess] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const router = useRouter()
+  
+  // Default user ID (in a real app, this would come from authentication)
+  const userId = "default-user"
 
   useEffect(() => {
-    // Load the processed words from localStorage
-    const storedWords = localStorage.getItem('processedWords')
+    // Check if there's a wordId in the URL
+    const params = new URLSearchParams(window.location.search);
+    const wordId = params.get('wordId');
     
-    if (!storedWords) {
-      setError('没有找到单词数据，请先输入单词')
-      setIsLoading(false)
-      return
+    if (wordId) {
+      // Load a specific word from the learning records
+      const fetchWord = async () => {
+        try {
+          const response = await axios.get(`/api/learning-record/get?userId=${userId}`);
+          
+          if (response.data.records && response.data.records.length > 0) {
+            // Find the specific word
+            const record = response.data.records.find((r: LearningRecord) => r.wordId === wordId);
+            
+            if (record) {
+              // Convert to Word format
+              const word: Word = {
+                word: record.word,
+                phonetic: record.phonetic,
+                meaning: record.meaning,
+                examples: record.examples
+              };
+              
+              setWords([word]);
+              setCurrentIndex(0);
+              setIsLoading(false);
+            } else {
+              setError('找不到指定的单词');
+              setIsLoading(false);
+            }
+          } else {
+            setError('没有找到学习记录');
+            setIsLoading(false);
+          }
+        } catch (err) {
+          console.error('Error fetching word:', err);
+          setError('加载单词数据时出错');
+          setIsLoading(false);
+        }
+      };
+      
+      fetchWord();
+    } else {
+      // Load the processed words from localStorage
+      const storedWords = localStorage.getItem('processedWords');
+      
+      if (!storedWords) {
+        setError('没有找到单词数据，请先输入单词');
+        setIsLoading(false);
+        return;
+      }
+      
+      try {
+        const parsedWords = JSON.parse(storedWords);
+        setWords(parsedWords);
+        setIsLoading(false);
+      } catch (err) {
+        console.error('Error parsing stored words:', err);
+        setError('加载单词数据时出错');
+        setIsLoading(false);
+      }
     }
+  }, [userId])
+  
+  // Extract words from examples when current word changes
+  useEffect(() => {
+    const currentWord = words[currentIndex]
+    if (currentWord) {
+      // Extract words from all examples
+      const allWords = currentWord.examples.flatMap(example => 
+        extractWordsFromExample(example.en)
+      );
+      
+      // Remove duplicates and the current word itself
+      const uniqueWords = Array.from(new Set(allWords))
+        .filter(word => word.toLowerCase() !== currentWord.word.toLowerCase());
+      
+      setExampleWords(uniqueWords);
+      setSelectedWord('');
+      setSaveSuccess(null);
+      setSaveError(null);
+    }
+  }, [words, currentIndex]);
+  
+  // Function to save a word to the learning records
+  const saveWordToLearningRecords = async (word: string, addToReviewList: boolean) => {
+    setSavingWord(true);
+    setSaveSuccess(null);
+    setSaveError(null);
     
     try {
-      const parsedWords = JSON.parse(storedWords)
-      setWords(parsedWords)
-      setIsLoading(false)
-    } catch (err) {
-      console.error('Error parsing stored words:', err)
-      setError('加载单词数据时出错')
-      setIsLoading(false)
+      // Call Claude to get details for the word
+      const response = await axios.post('/api/words/process', { words: [word] });
+      const processedWord = response.data.words[0];
+      
+      // Save the word to learning records
+      await axios.post('/api/learning-record/save', {
+        userId,
+        word: processedWord,
+        addToReviewList
+      });
+      
+      setSaveSuccess(`单词 "${word}" 已${addToReviewList ? '添加到复习列表' : '保存到学习记录'}`);
+    } catch (error) {
+      console.error('Error saving word:', error);
+      setSaveError(`保存单词 "${word}" 时出错`);
+    } finally {
+      setSavingWord(false);
     }
-  }, [])
-
-  const currentWord = words[currentIndex]
+  };
 
   const playAudio = async (text: string) => {
     console.log(`Attempting to play audio for text: "${text}"`);
@@ -136,6 +261,7 @@ export default function LearnPage() {
     )
   }
 
+  const currentWord = words[currentIndex]
   if (!currentWord) {
     return (
       <div className="container mx-auto px-4 py-12">
@@ -198,6 +324,59 @@ export default function LearnPage() {
               </div>
             ))}
           </div>
+          
+          {exampleWords.length > 0 && (
+            <div className="mt-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="text-lg font-semibold mb-2">例句中的其他单词：</h3>
+              <div className="flex flex-wrap gap-2">
+                {exampleWords.map((word, index) => (
+                  <button
+                    key={index}
+                    className={`px-3 py-1 rounded-full text-sm ${
+                      selectedWord === word 
+                        ? 'bg-primary text-white' 
+                        : 'bg-gray-200 hover:bg-gray-300'
+                    }`}
+                    onClick={() => setSelectedWord(word)}
+                  >
+                    {word}
+                  </button>
+                ))}
+              </div>
+              
+              {selectedWord && (
+                <div className="mt-4">
+                  <div className="flex space-x-2">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => saveWordToLearningRecords(selectedWord, true)}
+                      disabled={savingWord}
+                    >
+                      {savingWord ? '保存中...' : '添加到复习列表'}
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => playAudio(selectedWord)}
+                    >
+                      播放发音
+                    </button>
+                  </div>
+                  
+                  {saveSuccess && (
+                    <div className="mt-2 p-2 bg-green-100 text-green-700 rounded">
+                      {saveSuccess}
+                    </div>
+                  )}
+                  
+                  {saveError && (
+                    <div className="mt-2 p-2 bg-red-100 text-red-700 rounded">
+                      {saveError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         
         <div className="flex justify-between">
