@@ -67,3 +67,4 @@ venv/
 # Audio cache
 /audio_cache/
 /backend/audio_cache/
+*.mp3
