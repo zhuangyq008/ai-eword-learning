@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -926,10 +926,10 @@ async def update_review_status(wordId: str, userId: str, addToReviewList: bool):
         logging.error(f"Error updating review status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"更新复习状态时出错: {str(e)}")
 
-@app.post("/increment-review-count")
-async def increment_review_count(wordId: str, userId: str):
+# Background task function for incrementing review count
+async def increment_review_count_task(wordId: str, userId: str):
     """
-    Increment the review count of a word
+    Background task to increment the review count of a word
     """
     try:
         # Create the table if it doesn't exist
@@ -954,16 +954,32 @@ async def increment_review_count(wordId: str, userId: str):
             ReturnValues="UPDATED_NEW"
         )
         
+        logging.info(f"Successfully incremented review count for word {wordId}, user {userId}")
+        return response
+    except Exception as e:
+        logging.error(f"Error in background task incrementing review count: {str(e)}")
+
+@app.post("/increment-review-count")
+async def increment_review_count(wordId: str, userId: str, background_tasks: BackgroundTasks):
+    """
+    Increment the review count of a word asynchronously
+    """
+    try:
+        # Schedule the update to happen in the background
+        background_tasks.add_task(increment_review_count_task, wordId, userId)
+        
+        # Return immediately with a success response
+        current_time = datetime.now().isoformat()
         return {
             'wordId': wordId,
             'userId': userId,
-            'reviewCount': response['Attributes'].get('reviewCount', 1),
-            'lastReviewedAt': current_time,
-            'status': 'success'
+            'status': 'success',
+            'message': '复习次数更新已安排在后台进行',
+            'requestedAt': current_time
         }
     except Exception as e:
-        logging.error(f"Error incrementing review count: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"增加复习次数时出错: {str(e)}")
+        logging.error(f"Error scheduling review count increment: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"安排增加复习次数时出错: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

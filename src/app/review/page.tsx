@@ -131,12 +131,14 @@ export default function ReviewPage() {
     
     setIncrementing(true);
     try {
-      await axios.post('/api/learning-record/increment', {
+      const response = await axios.post('/api/learning-record/increment', {
         wordId: currentRecord.wordId,
         userId
       });
       
-      // Update the local record
+      console.log('Increment response:', response.data);
+      
+      // Update the local record immediately even though the backend processes asynchronously
       const updatedRecords = [...records];
       updatedRecords[currentIndex] = {
         ...updatedRecords[currentIndex],
@@ -147,7 +149,10 @@ export default function ReviewPage() {
     } catch (err) {
       console.error('Error incrementing review count:', err);
     } finally {
-      setIncrementing(false);
+      // Reduce the incrementing state duration since we're not waiting for the actual DB update
+      setTimeout(() => {
+        setIncrementing(false);
+      }, 300); // Short delay to show feedback to user
     }
   };
 
